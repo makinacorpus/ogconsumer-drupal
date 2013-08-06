@@ -1,0 +1,4 @@
+name = Open Graph Consumer
+core = 7.x
+description = Consumes Open Graph data and provide helpers such as input text filter.
+package = Web services

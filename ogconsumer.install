@@ -1,0 +1,31 @@
+<?php
+
+/**
+ * @file
+ * OgConsumer schema.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function ogconsumer_schema() {
+  $schema = array();
+  $schema["cache_ogconsumer"] = drupal_get_schema_unprocessed('system', 'cache');
+  $schema["cache_ogconsumer"]['description'] = "Cache table used to store URL previews.";
+  return $schema;
+}
+
+/**
+ * Adds the {cache_ogconsumer} cache table.
+ */
+function ogconsumer_update_7001() {
+  if (!db_table_exists('cache_ogconsumer')) {
+    db_create_table(
+      'cache_ogconsumer',
+      drupal_get_schema_unprocessed(
+        'ogconsumer',
+        'cache_ogconsumer'
+      )
+    );
+  }
+}

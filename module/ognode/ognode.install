@@ -1,0 +1,44 @@
+<?php
+
+/**
+ * @file
+ * Open Graph Node schema definition.
+ */
+
+/**
+ * We need constants.
+ */
+require_once __DIR__ . '/ognode.module';
+
+/**
+ * Implements hook_field_schema().
+ */
+function ognode_field_schema($field) {
+  switch ($field['type']) {
+
+    case OGNODE_FIELD:
+      return array(
+        'columns' => array(
+          'value' => array(
+            // Sorry I hate using serialized data in database but let's use it
+            // anyway because Open Graph data is not predictible: it will depend
+            // on what's automatic and what's not and on what the user was able
+            // and has overriden.
+            'type' => 'blob',
+          ),
+        ),
+      );
+  }
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function ognode_uninstall() {
+
+  if ($field = field_info_field(OGNODE_FIELD)) {
+    field_delete_field(OGNODE_FIELD);
+  }
+
+  variable_del(OGNODE_VAR_BUNDLES);
+}

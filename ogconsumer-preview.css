@@ -1,0 +1,15 @@
+.preview .image {
+  float: left;
+  margin-right: 1em;
+}
+/* @todo Next two to be removed in flavor of image styles. */
+.preview img {
+  width: 100px;
+  height: 75px;
+}
+.preview .footer {
+  clear: both;
+}
+.preview a:hover {
+  text-decoration: none;
+}

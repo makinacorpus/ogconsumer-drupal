@@ -1,0 +1,330 @@
+<?php
+
+/**
+ * @file
+ * Open Graph Node module.
+ */
+
+/**
+ * Enabled bundles variable name.
+ */
+const OGNODE_VAR_BUNDLES = 'ognode_bundles';
+
+/**
+ * Global site information.
+ */
+const OGNODE_VAR_SITE_INFO = 'ognode_site_info';
+
+/**
+ * Global field name.
+ */
+const OGNODE_FIELD = 'og_meta';
+
+/**
+ * Default formatter.
+ */
+const OGNODE_FORMATTER = 'og_meta_hidden';
+
+/**
+ * No "field" hook group, sad Drupal is sad.
+ */
+require_once __DIR__ . '/ognode.field.inc';
+
+/**
+ * Implements hook_menu().
+ */
+function ognode_menu() {
+  $items = array();
+
+  $items['admin/config/services/ognode'] = array(
+    'title'            => 'Open Graph node',
+    'description'      => "Configure Open Graph node bundles and default values.",
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('ognode_admin_info'),
+    'access arguments' => array('administer site configuration'),
+    'file'             => 'ognode.admin.inc',
+    'type'             => MENU_NORMAL_ITEM,
+  );
+  $items['admin/config/services/ognode/info'] = array(
+    'title'            => 'Global values',
+    'type'             => MENU_DEFAULT_LOCAL_TASK,
+  );
+  $items['admin/config/services/ognode/bundles'] = array(
+    'title'            => 'Bundles',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('ognode_admin_bundle'),
+    'access arguments' => array('administer site configuration'),
+    'file'             => 'ognode.admin.inc',
+    'type'             => MENU_LOCAL_TASK,
+    'weight'           => 20,
+  );
+  $items['admin/config/services/ognode/bundles/%'] = array(
+    'title'            => 'Customize bundle',
+    'page callback'    => 'ognode_admin_bundle_customize_page',
+    'page arguments'   => array(5),
+    'access arguments' => array('administer site configuration'),
+    'file'             => 'ognode.admin.inc',
+    'type'             => MENU_CALLBACK | MENU_VISIBLE_IN_BREADCRUMB,
+  );
+  $items['admin/config/services/ognode/settings'] = array(
+    'title'            => 'Settings',
+    'page callback'    => 'drupal_get_form',
+    'page arguments'   => array('ognode_admin_settings'),
+    'access arguments' => array('administer site configuration'),
+    'file'             => 'ognode.admin.inc',
+    'type'             => MENU_LOCAL_TASK,
+    'weight'           => 50,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ognode_theme() {
+  return array(
+    'ognode_admin_bundle_customize' => array(
+      'render element' => 'form',
+      'file'           => 'ognode.admin.inc',
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_load().
+ */
+function ognode_field_load($type, $entities, $field, $instances, $langcode, &$items, $age) {
+
+  if (OGNODE_FIELD !== $field['field_name']) {
+    return;
+  }
+
+  // Compute meta data and ensures it gets into the field cache.
+  foreach ($entities as $id => $entity) {
+    $items[$id] = array(
+      array(
+        'data' => ognode_entity_find_meta(
+          $type,
+          $entity,
+          $instances[$id]['settings']['properties']
+        ),
+      ),
+    );
+  }
+}
+
+/**
+ * Implements hook_entity_view().
+ */
+function ognode_entity_view($entity, $type, $view_mode, $langcode) {
+
+  if (!($uri = entity_uri($type, $entity)) || $uri['path'] !== current_path()) {
+    // We are obviously not viewing the content in full page.
+    return;
+  }
+
+  // If we have data apply it to the current page.
+  if (!empty($entity->{OGNODE_FIELD})) {
+    ognode_apply_meta($entity->{OGNODE_FIELD}[LANGUAGE_NONE][0]['data']);
+  }
+}
+
+/**
+ * Global accesor that tells if the current runtime has meta information.
+ *
+ * @param boolean $set
+ *   If set set.
+ *
+ * @return boolean
+ *   False if no meta have been put.
+ */
+function ognode_has_meta($set = null) {
+  static $value = false;
+  if (null !== $set) {
+    $value = (bool)$set;
+  }
+  return $value;
+}
+
+/**
+ * Return default values for meta information.
+ *
+ * @return array
+ *   Array compatible with ognode_entity_find_meta() return.
+ *
+ * @see ognode_entity_find_meta()
+ */
+function ognode_meta_defaults() {
+
+  global $language;
+
+  // What the fuck Drupal.
+  $languages = language_list();
+  unset($languages[$language->language]);
+  $languages = array_keys($languages);
+  array_walk($languages, function (&$value) {
+    $value = strtolower($value) . '_' . strtoupper($value);
+  });
+
+  $ret = array(
+    'og:title'            => variable_get('site_name', "Drupal"),
+    'og:type'             => 'website',
+    'og:url'              => url('<front>', array('absolute' => true)),
+    'og:locale'           => strtolower($language->language) . '_' . strtoupper($language->language),
+    'og:locale:alternate' => $languages,
+  );
+
+  if ($slogan = variable_get('site_slogan')) {
+    $ret['og:description'] = $slogan;
+  }
+
+  return $ret;
+}
+
+/**
+ * Implements hook_page_build().
+ */
+function ognode_page_build(&$page) {
+  if (!ognode_has_meta()) {
+    $meta = variable_get(OGNODE_VAR_SITE_INFO, array()) + ognode_meta_defaults();
+    if (!empty($meta)) {
+      ognode_apply_meta($meta);
+    }
+  }
+}
+
+/**
+ * Build meta list.
+ *
+ * @param array $meta
+ *   Meta as returned by ognode_entity_find_meta().
+ *
+ * @see ognode_entity_find_meta().
+ */
+function ognode_apply_meta(array $meta, $path = '', $count = 0) {
+  if (empty($path) && !empty($meta)) {
+    ognode_has_meta(true);
+  }
+  foreach ($meta as $key => $value) {
+    if (!is_array($value)) {
+      $value = array($value);
+    }
+    foreach ($value as $content) {
+      if (is_array($content)) {
+        ognode_apply_meta($content, $key . ':', $count);
+      } else {
+        drupal_add_html_head(array(
+          '#tag'        => 'meta',
+          '#weight'     => 40315 + $count, // Future wars...
+          '#attributes' => array(
+            'property'  => $path . $key,
+            'content'   => $content,
+          ),
+        ), 'og-' . (++$count));
+      }
+    }
+  }
+}
+
+/**
+ * Find entity Open Graph meta data from given configuration.
+ *
+ * Found data will be cached in field value, so please be aware you cannot
+ * do anything contextual with it.
+ *
+ * @param object $entity
+ *   Loaded entity object.
+ * @param string $type
+ *   Entity type.
+ * @param array $properties
+ *   Properties configuration, keys are properties names and values are
+ *   ordered arrays of mecanisms name on how to fetch the content (or a
+ *   single string).
+ *   Values can be:
+ *     - strict null : leave this to us
+ *     - strict false : this property is disabled
+ *     - field:VALUE : find data from given field
+ *     - property:VALUE : find data from given property
+ *     - VALUE : this is hopefully a valid callback that must accept those
+ *       two parameters (in order): $type and $entity
+ *
+ * @return array
+ *   Ordered array of arrays, because we can have duplicates. Each value is
+ *   an array containing all the meta attributes to set. If one of the values
+ *   is itself an array, it will be exposed as a complex object with
+ *   properties. Because Open Graph protocol is very weird, the "url" property
+ *   is mandatory for each one of the structured objects.
+ */
+function ognode_entity_find_meta($type, $entity, array $properties) {
+
+  $ret = array();
+
+  require_once __DIR__ . '/ognode.process.inc';
+
+  foreach ($properties as $name => $mecanisms) {
+
+    // Ignore those mecanisms.
+    if (null === $mecanisms) {
+      continue;
+    }
+    if (false === $mecanisms) {
+      continue;
+    }
+
+    if (!is_array($mecanisms)) {
+      $mecanisms = array($mecanisms);
+    }
+
+    $values = array();
+    foreach ($mecanisms as $mecanism) {
+
+      if (strpos($mecanism, ':')) {
+        list($mecanism, $target) = explode(':', $mecanism, 2);
+      } else {
+        $target = null;
+      }
+
+      switch ($mecanism) {
+
+        case 'field':
+          $values = ognode_field_process($type, $entity, $target, $name);
+          break;
+
+        case 'property':
+          if (!empty($entity->{$target})) {
+            $values[] = $entity->{$target};
+          }
+          break;
+
+        case 'callback':
+          if (is_callable($target)) {
+            if ($result = call_user_func($target, $type, $entity)) {
+              if (is_array($result)) {
+                $values = $result;
+              } else {
+                $values[] = $result;
+              }
+            }
+          }
+          break;
+
+        default:
+          $values[] = $mecanism;
+      }
+
+      // Current mecanism found a value, break the foreach() in order
+      // to avoid duplicates.
+      if (!empty($values)) {
+        $ret[$name] = $values;
+        break;
+      }
+    }
+  }
+
+  drupal_alter('og_meta_entity', $ret, $type, $entity, $properties);
+  drupal_alter('og_meta_' . $type, $ret, $entity, $properties);
+
+  return $ret;
+}
+

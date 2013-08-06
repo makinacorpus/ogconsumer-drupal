@@ -1,0 +1,352 @@
+<?php
+
+/**
+ * @file
+ * Open Graph Consumer module.
+ */
+
+/**
+ * This module cache bin.
+ */
+const OGCONSUMER_CACHE = 'cache_ogconsumer';
+
+/**
+ * Description trim size variable name.
+ */
+const OGCONSUMER_DESC_TRIM = 'ogconsumer_desc_trim';
+
+/**
+ * Description trim size default value.
+ */
+const OGCONSUMER_DESC_TRIM_DEFAULT = 64;
+
+/**
+ * Variable name for default cache lifetime.
+ *
+ * Should probably use HTTP headers, but I don't have for that.
+ */
+const OGCONSUMER_CACHE_LIFETIME = 'ogconsumer_cache_lifetime';
+
+/**
+ * Maximum domain name string length for being cached as is (no MD5 hash).
+ */
+const OGCONSUMER_CACHE_NAME_MAX_LENGTH = 64;
+
+/**
+ * Define a custom autoloader if non declared, this prerequisites that the
+ * library lives under sites/all/libraries/ogconsumer.
+ */
+if (!class_exists('OgConsumer\Service')) {
+  // In case no custom autoloader is provided, use the composer one.
+  // In order to use it, you need to run "composer install" in the
+  // APubSub folder root.
+  $autoloadFile = DRUPAL_ROOT . '/sites/all/libraries/ogconsumer/vendor/autoload.php';
+  if (file_exists($autoloadFile)) {
+    require $autoloadFile;
+  }
+}
+
+/**
+ * Implements hook_init().
+ */
+function ogconsumer_init() {
+  // There is no existing solution than applying our CSS here because filter
+  // content are cached and #attached method will not work.
+  drupal_add_css(
+    drupal_get_path('module', 'ogconsumer') . '/ogconsumer-preview.css',
+    array('preprocess' => true, 'every_page' => true));
+}
+
+/**
+ * Implements hook_menu().
+ */
+function ogconsumer_menu() {
+  $items = array();
+
+  $items['ogconsumer/ajax/fetch'] = array(
+    'page callback'    => 'ogconsumer_ajax_fetch',
+    'access arguments' => array('access content'), // @todo Might cause DDoS?
+    'file'             => 'ogconsumer.ajax.inc',
+    'type'             => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function ogconsumer_theme() {
+  return array(
+    'ogconsumer_preview' => array(
+      'template' => 'ogconsumer-preview',
+    ),
+  );
+}
+
+/**
+ * Implements hook_filter_info().
+ */
+function ogconsumer_filter_info() {
+  return array(
+    'ogconsumer' => array(
+      'title'            => t("Open Graph URL preview"),
+      'description'      => t("Uses URL if alone in its line and attempt to fetch a preview consuming Open Graph data of the target site. Very important note: it must happen after HTML is chopped and before <p> tags are injected!"),
+      'prepare callback' => 'ogconsumer_filter_prepare',
+      'process callback' => 'ogconsumer_filter_process',
+    ),
+  );
+}
+
+/**
+ * Implements hook_flush_caches().
+ */
+function ogconsumer_flush_caches() {
+  return array(OGCONSUMER_CACHE);
+}
+
+/**
+ * Get OgConsummer service.
+ *
+ * @return OgConsumer\Service
+ *  Service instance.
+ */
+function ogconsumer_service_get() {
+  $cache = &drupal_static(__FUNCTION__);
+
+  if (null === $cache) {
+    // Apply no cache decorator to fetcher because we are going to implement
+    // our own. 
+    $cache = new \OgConsumer\Service();
+  }
+
+  return $cache;
+}
+
+/**
+ * Render a single preview.
+ *
+ * @param \OgConsumer\Object $object
+ *   Object to render.
+ *
+ * @return string
+ *   Valid (x)html.
+ */
+function ogconsumer_preview_render(\OgConsumer\Object $object) {
+  return theme('ogconsumer_preview', array('object' => $object));
+}
+
+/**
+ * Get cache identifier from URL.
+ *
+ * @param string $url
+ *   URL.
+ *
+ * @return string
+ *   Computed cache identifier.
+ */
+function ogconsumer_url_get_cid($url) {
+
+  global $theme_key;
+
+  if (!valid_url($url, true)) {
+    // @todo In some cases, Drupal don't like to have the same URL
+    // more than once...
+    //throw new \InvalidArgumentException("Invalid URL given");
+  }
+
+  // Leaving out the scheme will ensures that HTTP and HTTPS will
+  // matche the same cached entries. We don't care about special
+  // schemes this is only for classic web pages.
+  list(, $uri) = explode('://', $url, 2);
+
+  if (strpos($url, '/')) {
+    list($domain, $path) = explode('/', $uri, 2);
+  } else {
+    $domain = $uri;
+    $path   = '';
+  }
+
+  // Leaving the domain name clear will avoid rare but possible md5()
+  // collisions on different domains.
+  if (OGCONSUMER_CACHE_NAME_MAX_LENGTH < strlen($domain)) {
+    $cid = md5($uri);
+  } else if (empty($path)) {
+    $cid = $uri;
+  } else {
+    $cid = $domain . '/' . md5($path);
+  }
+
+  // And finally! We are caching HTML previews so we need to be theme
+  // dependent in order to avoid inconsistencies.
+  return $theme_key . ':' . $cid;
+}
+
+/**
+ * Fetch previews from cache.
+ *
+ * Previews are cached by theme.
+ *
+ * @param array $urlList
+ *   List of URL to fetch.
+ *
+ * @return array
+ *   Array of valid preview, those which cannot be rendered but are already
+ *   in cache are set to a strict false, cache misses are not in the array.
+ */
+function ogconsumer_preview_cache_fetch(array $urlList) {
+
+  // Drupal is stupid and does not normalize cache identifiers when
+  // the backend does not support long strings.
+  $map = array();
+  $ret = array();
+
+  foreach ($urlList as $url) {
+    $map[ogconsumer_url_get_cid($url)] = $url;
+  }
+
+  $cids = array_keys($map);
+  foreach (cache_get_multiple($cids, OGCONSUMER_CACHE) as $cid => $item) {
+    // Re-key the array using URL and not computed cache identifier.
+    $ret[$map[$cid]] = $item->data;
+  }
+
+  return $ret;
+}
+
+/**
+ * Set previews in cache.
+ *
+ * @param array $previews
+ *   List of previews. Note that entries that have failed but on which fetch
+ *   has been attempted should be cached too as strict false values.
+ *   Keys must be URL and values the valid (x)html string.
+ */
+function ogconsumer_preview_cache_set(array $previews) {
+
+  // Defaults to one week.
+  // @todo Should be a constant.
+  $lifetime = variable_get(OGCONSUMER_CACHE_LIFETIME, 604800);
+
+  foreach ($previews as $url => $value) {
+    cache_set(ogconsumer_url_get_cid($url), $value, OGCONSUMER_CACHE, $lifetime);
+  }
+}
+
+/**
+ * Fetch previews for given URL.
+ *
+ * @param array $urlList
+ *   List of URL to fetch.
+ *
+ * @return array
+ *   Keys are URL and values are preview, if no preview could be done or
+ *   URL could not be reached it will be a strict false instead.
+ */
+function ogconsumer_preview_fetch(array $urlList) {
+
+  // array_combine() sounds weird here but it effectively builds up an
+  // URL map based on keys, making everything else simple and faster
+  // below.
+  $map = array_combine($urlList, $urlList);
+  $ret = ogconsumer_preview_cache_fetch($map);
+
+  if (count($ret) !== count($map)) {
+
+    $miss = array_diff_key($map, $ret);
+
+    foreach (ogconsumer_service_get()->fetchAll($miss) as $url => $node) {
+      if (false !== $node) {
+        $ret[$url] = ogconsumer_preview_render($node);
+      } else {
+        $ret[$url] = false;
+      }
+    }
+
+    ogconsumer_preview_cache_set(array_intersect_key($ret, $miss));
+  }
+
+  return $ret;
+}
+
+/**
+ * Filter prepare callback.
+ *
+ * Attempt to fetch eligible links before core. It also avoid added HTML
+ * by other filters to interfere with us.
+ */
+function ogconsumer_filter_prepare($text, $filter, $format, $langcode, $cache, $cache_id) {
+
+  // Use drupal_static() as a registry.
+  $cache = &drupal_static('ogconsumer_filter', array());
+
+  $i = 0;
+  if (preg_match_all('@^\s*(http(s|)\://[^\n]*)\s*$@ims', $text, $matches, PREG_OFFSET_CAPTURE)) {
+    $map = array();
+    foreach (array_reverse($matches[1]) as $match) {
+      list($url, $offset) = $match;
+      $map[$url] = $offset;
+    }
+    $ret = array_filter(ogconsumer_preview_fetch(array_keys($map)));
+    foreach ($map as $url => $offset) {
+      if (isset($ret[$url])) {
+        $key = 'OGC:' . (++$i);
+        $cache[$cache_id][$key] = $ret[$url];
+        $text = substr_replace($text, $key, $offset, strlen($url));
+      }
+    }
+  }
+
+  return $text;
+}
+
+/**
+ * Process callback.
+ *
+ * Replaces eligible links using their preview.
+ */
+function ogconsumer_filter_process($text, $filter, $format, $langcode, $cache, $cache_id) {
+
+  // Retrieve data from ogconsumer_filter_prepare() callback.
+  $cache = &drupal_static('ogconsumer_filter', array());
+
+  if (!empty($cache[$cache_id])) {
+    $text = strtr($text, $cache[$cache_id]);
+  }
+
+  return $text;
+}
+
+/**
+ * Implements hook_preprocess_HOOK().
+ */
+function ogconsumer_preprocess_ogconsumer_preview(&$variables) {
+  if (($object = $variables['object']) instanceof \OgConsumer\Node) {
+    $variables += array(
+      'type'        => $object->getType(),
+      'title'       => $object->getTitle(),
+      'description' => $object->getDescription(),
+      'site_name'   => $object->getSiteName(),
+      'url'         => $object->getUrl(),
+    );
+    if ($image = $object->getImage()) {
+      $variables += array(
+        'image_url'    => $image->getUrl(),
+        'image_height' => $image->getHeight(),
+        'image_width'  => $image->getWidth(),
+      );
+    }
+  } else {
+    $variables += array(
+      'type'      => $title,
+      'title'     => t("Unknown"),
+      'site_name' => t("Unknown"),
+      'url'       => url(current_path()),
+    );
+  }
+
+  $limit = variable_get(OGCONSUMER_DESC_TRIM, OGCONSUMER_DESC_TRIM_DEFAULT);
+  if (!empty($variables['description']) && strlen($variables['description']) > $limit) {
+    $variables['description'] = text_summary($variables['description'], null, $limit) . '&hellip;';
+  }
+}

@@ -1,0 +1,4 @@
+name = Open Graph Node
+core = 7.x
+description = Transform your site into an Open Graph node.
+package = Web services
