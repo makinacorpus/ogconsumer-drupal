@@ -256,7 +256,7 @@ function ogconsumer_preview_fetch(array $urlList) {
     $miss = array_diff_key($map, $ret);
 
     foreach (ogconsumer_service_get()->fetchAll($miss) as $url => $node) {
-      if (false !== $node) {
+      if (FALSE !== $node && $node->getType() !== NULL) {
         $ret[$url] = ogconsumer_preview_render($node);
       } else {
         $ret[$url] = false;
