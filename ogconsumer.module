@@ -160,7 +160,7 @@ function ogconsumer_url_get_cid($url) {
   // schemes this is only for classic web pages.
   list(, $uri) = explode('://', $url, 2);
 
-  if (strpos($url, '/')) {
+  if (strpos($uri, '/')) {
     list($domain, $path) = explode('/', $uri, 2);
   } else {
     $domain = $uri;
